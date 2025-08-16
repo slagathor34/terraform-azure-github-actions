@@ -38,8 +38,9 @@ jobs:
         az group create --name "tfstate-rg" --location "East US" --tags "ManagedBy=terraform" "Purpose=tfstate"
         
         # Create storage account for Terraform state
-        STORAGE_ACCOUNT_NAME="tfstate${{ secrets.AZURE_SUBSCRIPTION_ID }}$(echo $RANDOM | md5sum | head -c 6)"
-        STORAGE_ACCOUNT_NAME=$(echo $STORAGE_ACCOUNT_NAME | tr '[:upper:]' '[:lower:]' | head -c 24)
+        # Generate a valid storage account name: tfstate + hash of subscription ID (max 24 chars, lowercase alphanumeric only)
+        STORAGE_ACCOUNT_NAME="tfstate$(echo -n ${{ secrets.AZURE_SUBSCRIPTION_ID }} | sha256sum | cut -c1-16)"
+        echo "Storage account name: $STORAGE_ACCOUNT_NAME"
         
         az storage account create \
           --name $STORAGE_ACCOUNT_NAME \
