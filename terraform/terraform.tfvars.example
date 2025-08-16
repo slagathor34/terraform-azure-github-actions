@@ -1,0 +1,20 @@
+# Example Terraform variables file
+# Copy this file to terraform.tfvars and customize the values
+
+project_name = "myproject"
+environment = "dev"
+location = "East US"
+
+# Optional: Specify a custom resource group name
+# resource_group_name = "my-custom-rg-name"
+
+# App Service Plan SKU (F1 = Free, B1 = Basic, S1 = Standard, P1V2 = Premium)
+app_service_sku = "F1"
+
+# Custom tags
+tags = {
+  Environment = "dev"
+  Project     = "my-terraform-project"
+  ManagedBy   = "terraform"
+  Owner       = "devops-team"
+}

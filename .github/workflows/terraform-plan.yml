@@ -1,0 +1,129 @@
+name: 'Terraform Plan'
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  terraform-plan:
+    name: 'Terraform Plan'
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./terraform
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.7.0"
+
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Terraform Backend
+      run: |
+        # Create resource group for Terraform state if it doesn't exist
+        az group create --name "tfstate-rg" --location "East US" --tags "ManagedBy=terraform" "Purpose=tfstate" || true
+        
+        # Create storage account for Terraform state if it doesn't exist
+        STORAGE_ACCOUNT_NAME="tfstate${{ secrets.AZURE_SUBSCRIPTION_ID }}$(echo $RANDOM | md5sum | head -c 6)"
+        STORAGE_ACCOUNT_NAME=$(echo $STORAGE_ACCOUNT_NAME | tr '[:upper:]' '[:lower:]' | head -c 24)
+        
+        az storage account create \
+          --name $STORAGE_ACCOUNT_NAME \
+          --resource-group "tfstate-rg" \
+          --location "East US" \
+          --sku "Standard_LRS" \
+          --tags "ManagedBy=terraform" "Purpose=tfstate" || true
+        
+        # Create container for Terraform state if it doesn't exist
+        az storage container create \
+          --name "tfstate" \
+          --account-name $STORAGE_ACCOUNT_NAME || true
+        
+        # Export for later steps
+        echo "TERRAFORM_STORAGE_ACCOUNT=$STORAGE_ACCOUNT_NAME" >> $GITHUB_ENV
+
+    - name: Terraform Init
+      run: |
+        terraform init \
+          -backend-config="resource_group_name=tfstate-rg" \
+          -backend-config="storage_account_name=$TERRAFORM_STORAGE_ACCOUNT" \
+          -backend-config="container_name=tfstate" \
+          -backend-config="key=terraform.tfstate"
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+    - name: Terraform Validate
+      run: terraform validate
+
+    - name: Terraform Format Check
+      run: terraform fmt -check=true -recursive
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        terraform plan -no-color -input=false -out=tfplan
+        terraform show -no-color tfplan > plan_output.txt
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+    - name: Comment Plan on PR
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          const plan = fs.readFileSync('terraform/plan_output.txt', 'utf8');
+          const maxLength = 65000; // GitHub comment limit is 65536 characters
+          const truncatedPlan = plan.length > maxLength ? plan.substring(0, maxLength) + '\n...\n**Plan truncated due to length**' : plan;
+          
+          const output = `#### Terraform Plan 📖
+          <details><summary>Show Plan</summary>
+          
+          \`\`\`terraform
+          ${truncatedPlan}
+          \`\`\`
+          
+          </details>
+          
+          *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: output
+          });
+
+    - name: Upload Plan Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-plan
+        path: terraform/tfplan
+        retention-days: 30
