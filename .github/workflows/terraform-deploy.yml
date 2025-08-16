@@ -154,5 +154,24 @@ jobs:
           echo "✅ Resources deployed successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deployed Resources:" >> $GITHUB_STEP_SUMMARY
-          terraform output -json | jq -r 'to_entries[] | select(.key | test("_name$")) | "- **\(.key | gsub("_"; " ") | gsub("\\b\\w"; ascii_upcase))**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Resource details available in Terraform outputs" >> $GITHUB_STEP_SUMMARY
+          
+          # Try to get terraform outputs, fallback to simple message if it fails
+          if terraform output > /dev/null 2>&1; then
+            echo "- **Resource Group**: $(terraform output -raw resource_group_name 2>/dev/null || echo 'Created')" >> $GITHUB_STEP_SUMMARY
+            echo "- **Storage Account**: $(terraform output -raw storage_account_name 2>/dev/null || echo 'Created')" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Resource Group: Created" >> $GITHUB_STEP_SUMMARY
+            echo "- Storage Account: Created" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "- Infrastructure is now ready for use" >> $GITHUB_STEP_SUMMARY
+          echo "- Check the Azure portal for deployed resources" >> $GITHUB_STEP_SUMMARY
         fi
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
