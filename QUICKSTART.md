@@ -31,8 +31,11 @@ This script will:
 
 In your GitHub repository, go to **Settings** → **Secrets and variables** → **Actions**
 
-Add this secret:
-- `AZURE_CREDENTIALS`
+Add these four secrets:
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+- `AZURE_SUBSCRIPTION_ID`
+- `AZURE_TENANT_ID`
 
 ### Step 3: Customize Your Infrastructure
 
