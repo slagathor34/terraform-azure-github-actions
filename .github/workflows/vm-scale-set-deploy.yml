@@ -71,28 +71,59 @@ jobs:
         STORAGE_ACCOUNT_NAME="tfstate$(echo -n ${{ secrets.AZURE_SUBSCRIPTION_ID }} | sha256sum | cut -c1-16)"
         echo "TERRAFORM_STORAGE_ACCOUNT=$STORAGE_ACCOUNT_NAME" >> $GITHUB_ENV
 
-    - name: Get Custom Image ID
+    - name: Deploy VM Scale Set using Terraform
       run: |
-        # Get the image ID from the compute gallery
-        IMAGE_ID=$(az sig image-version show \
-          --resource-group "image-creation-rg" \
-          --gallery-name "imageGallery" \
-          --gallery-image-definition "ubuntu-web-server" \
-          --gallery-image-version "${{ github.event.inputs.image_version }}" \
-          --query id -o tsv)
+        cd terraform/scaleset-deploy
         
-        if [ -z "$IMAGE_ID" ]; then
-          echo "Error: Custom image version ${{ github.event.inputs.image_version }} not found!"
-          echo "Please run the 'VM Image Creation Pipeline' workflow first."
-          exit 1
-        fi
+        # Initialize Terraform with backend configuration
+        terraform init \
+          -backend-config="resource_group_name=tfstate-rg" \
+          -backend-config="storage_account_name=$TERRAFORM_STORAGE_ACCOUNT" \
+          -backend-config="container_name=tfstate" \
+          -backend-config="key=scaleset-deploy/terraform.tfstate"
         
-        echo "CUSTOM_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
-        echo "Found custom image: $IMAGE_ID"
-
-    - name: Remove Large Inline Configuration Step
-      run: |
-        echo "Using environment-specific configuration instead of inline generation"
+        # Plan the deployment
+        terraform plan \
+          -var="resource_group_name=scaleset-rg" \
+          -var="location=East US" \
+          -var="create_resource_group=true" \
+          -var="vmss_name=web-scale-set" \
+          -var="custom_image_version=${{ github.event.inputs.image_version }}" \
+          -var="gallery_name=imageGallery" \
+          -var="gallery_image_definition_name=ubuntu-web-server" \
+          -var="gallery_resource_group_name=image-creation-rg" \
+          -var="existing_vnet_name=scaleset-vnet" \
+          -var="existing_vnet_resource_group=scaleset-rg" \
+          -var="vm_sku=${{ github.event.inputs.vm_size }}" \
+          -var="initial_instances=${{ github.event.inputs.instance_count }}" \
+          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}"
+        
+        # Apply the deployment
+        terraform apply -auto-approve \
+          -var="resource_group_name=scaleset-rg" \
+          -var="location=East US" \
+          -var="create_resource_group=true" \
+          -var="vmss_name=web-scale-set" \
+          -var="custom_image_version=${{ github.event.inputs.image_version }}" \
+          -var="gallery_name=imageGallery" \
+          -var="gallery_image_definition_name=ubuntu-web-server" \
+          -var="gallery_resource_group_name=image-creation-rg" \
+          -var="existing_vnet_name=scaleset-vnet" \
+          -var="existing_vnet_resource_group=scaleset-rg" \
+          -var="vm_sku=${{ github.event.inputs.vm_size }}" \
+          -var="initial_instances=${{ github.event.inputs.instance_count }}" \
+          -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}"
+        
+        # Get deployment summary
+        terraform output -json deployment_summary > deployment_summary.json
+        echo "Deployment Summary:"
+        cat deployment_summary.json | jq .
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
 
     - name: Terraform Init (Scale Set)
       run: |

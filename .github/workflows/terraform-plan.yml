@@ -31,38 +31,29 @@ jobs:
       with:
         terraform_version: "1.7.0"
 
-    - name: Azure CLI Login
+    - name: Setup Terraform Backend Infrastructure
+      id: backend
       run: |
-        az login --service-principal \
-          --username ${{ secrets.AZURE_CLIENT_ID }} \
-          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
-          --tenant ${{ secrets.AZURE_TENANT_ID }}
-        az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-    - name: Setup Terraform Backend
-      run: |
-        # Create resource group for Terraform state if it doesn't exist
-        az group create --name "tfstate-rg" --location "East US" --tags "ManagedBy=terraform" "Purpose=tfstate" || true
-        
-        # Create storage account for Terraform state if it doesn't exist
-        # Generate a valid storage account name: tfstate + hash of subscription ID (max 24 chars, lowercase alphanumeric only)
+        # Generate deterministic storage account name
         STORAGE_ACCOUNT_NAME="tfstate$(echo -n ${{ secrets.AZURE_SUBSCRIPTION_ID }} | sha256sum | cut -c1-16)"
-        echo "Storage account name: $STORAGE_ACCOUNT_NAME"
-        
-        az storage account create \
-          --name $STORAGE_ACCOUNT_NAME \
-          --resource-group "tfstate-rg" \
-          --location "East US" \
-          --sku "Standard_LRS" \
-          --tags "ManagedBy=terraform" "Purpose=tfstate" || true
-        
-        # Create container for Terraform state if it doesn't exist
-        az storage container create \
-          --name "tfstate" \
-          --account-name $STORAGE_ACCOUNT_NAME || true
-        
-        # Export for later steps
         echo "TERRAFORM_STORAGE_ACCOUNT=$STORAGE_ACCOUNT_NAME" >> $GITHUB_ENV
+        
+        # Ensure backend infrastructure exists using Terraform
+        cd backend-setup
+        
+        terraform init
+        
+        # Try to plan and apply backend infrastructure
+        terraform plan -var="resource_group_name=tfstate-rg" -var="location=East US"
+        terraform apply -auto-approve -var="resource_group_name=tfstate-rg" -var="location=East US"
+        
+        echo "Backend infrastructure ready"
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
 
     - name: Terraform Init
       run: |

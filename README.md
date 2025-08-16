@@ -96,9 +96,6 @@ flowchart TD
     class OptionalPath optional
     class ImageError error
 ```
-
-## Architecture Overview
-
 ## Architecture Overview
 
 ### 🎯 **Workflow Types**
