@@ -13,13 +13,11 @@ terraform {
   }
 
   # Backend configuration for remote state
-  # This will be configured in GitHub Actions
   backend "azurerm" {
-    # These values will be set via environment variables or command line
-    # resource_group_name  = "tfstate-rg"
-    # storage_account_name = "tfstateXXXXXX"
-    # container_name       = "tfstate"
-    # key                  = "terraform.tfstate"
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateb1a10c1deee275d0"
+    container_name       = "tfstate"
+    key                  = "terraform.tfstate"
   }
 }
 

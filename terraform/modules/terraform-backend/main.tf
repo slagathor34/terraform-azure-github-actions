@@ -22,6 +22,10 @@ resource "azurerm_resource_group" "tfstate" {
     ManagedBy = "terraform"
     Purpose   = "tfstate"
   })
+  
+  lifecycle {
+    ignore_changes = [tags]
+  }
 }
 
 # Storage Account for Terraform State

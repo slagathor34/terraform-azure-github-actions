@@ -14,8 +14,13 @@ terraform {
     }
   }
   
-  # Backend configuration will be provided during init
-  backend "azurerm" {}
+  # Backend configuration for image creation state
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstateb1a10c1deee275d0"
+    container_name       = "tfstate"
+    key                  = "image-creation/terraform.tfstate"
+  }
 }
 
 # Configure the Microsoft Azure Provider
