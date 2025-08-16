@@ -7,9 +7,6 @@ This repository contains Terraform configurations for deploying infrastructure t
 This setup includes:
 - **Resource Group**: Container for all Azure resources
 - **Storage Account**: For Terraform state management and general storage needs
-- **App Service Plan**: Hosting plan for web applications
-- **App Service**: Web application hosting
-- **Application Insights**: Application monitoring and analytics
 
 ## Prerequisites
 

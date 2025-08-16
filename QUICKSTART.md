@@ -84,20 +84,8 @@ Your infrastructure will include:
 
 - **Resource Group**: Container for all resources
 - **Storage Account**: For file storage and Terraform state
-- **App Service Plan**: Hosting environment (Free tier by default)
-- **App Service**: Web application hosting
-- **Application Insights**: Application monitoring
 
 ## 🔧 Common Configurations
-
-### Change App Service Plan Size
-
-In `terraform/terraform.tfvars`:
-```hcl
-app_service_sku = "B1"  # Basic
-# or
-app_service_sku = "S1"  # Standard
-```
 
 ### Add Custom Tags
 
@@ -157,9 +145,8 @@ terraform destroy
 After deployment:
 
 1. Check the **Actions** tab for deployment status
-2. Visit the App Service URL provided in the deployment summary
-3. Monitor resources in the Azure Portal
-4. Use Application Insights for application monitoring
+2. Monitor resources in the Azure Portal
+3. Check Terraform outputs for resource details
 
 ## ❓ Troubleshooting
 

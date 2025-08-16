@@ -22,12 +22,6 @@ variable "resource_group_name" {
   default     = null
 }
 
-variable "app_service_sku" {
-  description = "The SKU for the App Service Plan"
-  type        = string
-  default     = "F1"
-}
-
 variable "tags" {
   description = "A map of tags to assign to the resources"
   type        = map(string)

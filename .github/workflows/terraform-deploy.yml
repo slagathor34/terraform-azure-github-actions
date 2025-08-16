@@ -27,7 +27,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: 
       name: production
-      url: ${{ steps.deploy.outputs.app_url }}
     
     defaults:
       run:
@@ -119,13 +118,6 @@ jobs:
       id: deploy
       run: |
         terraform apply -auto-approve tfplan
-        
-        # Get outputs if not destroying
-        if [ "${{ github.event.inputs.action }}" != "destroy" ]; then
-          APP_URL=$(terraform output -raw app_service_url 2>/dev/null || echo "")
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
-          echo "App Service URL: $APP_URL"
-        fi
       env:
         ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -153,10 +145,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Deployed Resources:" >> $GITHUB_STEP_SUMMARY
           terraform output -json | jq -r 'to_entries[] | select(.key | test("_name$")) | "- **\(.key | gsub("_"; " ") | gsub("\\b\\w"; ascii_upcase))**: \(.value.value)"' >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Resource details available in Terraform outputs" >> $GITHUB_STEP_SUMMARY
-          
-          if [ ! -z "${{ steps.deploy.outputs.app_url }}" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Application URL:" >> $GITHUB_STEP_SUMMARY
-            echo "🌐 [${{ steps.deploy.outputs.app_url }}](${{ steps.deploy.outputs.app_url }})" >> $GITHUB_STEP_SUMMARY
-          fi
         fi
