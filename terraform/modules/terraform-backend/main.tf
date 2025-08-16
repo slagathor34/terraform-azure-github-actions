@@ -39,6 +39,19 @@ resource "azurerm_storage_account" "tfstate" {
   # Network access rules
   public_network_access_enabled = true
   
+  # Blob properties for versioning and soft delete
+  blob_properties {
+    versioning_enabled = true
+    
+    delete_retention_policy {
+      days = 7
+    }
+    
+    container_delete_retention_policy {
+      days = 7
+    }
+  }
+  
   tags = merge(var.tags, {
     ManagedBy = "terraform"
     Purpose   = "tfstate"
@@ -50,20 +63,4 @@ resource "azurerm_storage_container" "tfstate" {
   name                  = "tfstate"
   storage_account_name  = azurerm_storage_account.tfstate.name
   container_access_type = "private"
-}
-
-# Optional: Enable versioning and soft delete for better state management
-resource "azurerm_storage_account_blob_service_properties" "tfstate" {
-  storage_account_id = azurerm_storage_account.tfstate.id
-  
-  versioning_enabled  = true
-  change_feed_enabled = false
-  
-  delete_retention_policy {
-    days = 7
-  }
-  
-  container_delete_retention_policy {
-    days = 7
-  }
 }
