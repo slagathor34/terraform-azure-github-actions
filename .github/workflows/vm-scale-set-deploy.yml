@@ -1,0 +1,208 @@
+name: 'Deploy VM Scale Set'
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_version:
+        description: 'Version of the custom image to use'
+        required: true
+        default: '1.0.0'
+        type: string
+      scale_set_name:
+        description: 'Name of the VM Scale Set'
+        required: true
+        default: 'web-scale-set'
+        type: string
+      initial_instances:
+        description: 'Initial number of VM instances'
+        required: true
+        default: '2'
+        type: string
+      max_instances:
+        description: 'Maximum number of VM instances'
+        required: true
+        default: '10'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-scale-set:
+    name: 'Deploy VM Scale Set'
+    runs-on: ubuntu-latest
+    environment: 
+      name: production
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./terraform/environments/scaleset
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.7.0"
+        terraform_wrapper: false
+
+    - name: Azure CLI Login
+      run: |
+        az login --service-principal \
+          --username ${{ secrets.AZURE_CLIENT_ID }} \
+          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
+          --tenant ${{ secrets.AZURE_TENANT_ID }}
+        az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup SSH Key for Scale Set Access
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        echo "${{ secrets.VM_SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa
+        chmod 644 ~/.ssh/id_rsa.pub
+
+    - name: Setup Terraform Backend
+      id: backend
+      run: |
+        STORAGE_ACCOUNT_NAME="tfstate$(echo -n ${{ secrets.AZURE_SUBSCRIPTION_ID }} | sha256sum | cut -c1-16)"
+        echo "TERRAFORM_STORAGE_ACCOUNT=$STORAGE_ACCOUNT_NAME" >> $GITHUB_ENV
+
+    - name: Get Custom Image ID
+      run: |
+        # Get the image ID from the compute gallery
+        IMAGE_ID=$(az sig image-version show \
+          --resource-group "image-creation-rg" \
+          --gallery-name "imageGallery" \
+          --gallery-image-definition "ubuntu-web-server" \
+          --gallery-image-version "${{ github.event.inputs.image_version }}" \
+          --query id -o tsv)
+        
+        if [ -z "$IMAGE_ID" ]; then
+          echo "Error: Custom image version ${{ github.event.inputs.image_version }} not found!"
+          echo "Please run the 'VM Image Creation Pipeline' workflow first."
+          exit 1
+        fi
+        
+        echo "CUSTOM_IMAGE_ID=$IMAGE_ID" >> $GITHUB_ENV
+        echo "Found custom image: $IMAGE_ID"
+
+    - name: Remove Large Inline Configuration Step
+      run: |
+        echo "Using environment-specific configuration instead of inline generation"
+
+    - name: Terraform Init (Scale Set)
+      run: |
+        terraform init \
+          -backend-config="resource_group_name=tfstate-rg" \
+          -backend-config="storage_account_name=$TERRAFORM_STORAGE_ACCOUNT" \
+          -backend-config="container_name=tfstate" \
+          -backend-config="key=scale-set.tfstate"
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Terraform Plan (Scale Set)
+      run: |
+        terraform plan -no-color -input=false -out=tfplan
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Terraform Apply (Deploy Scale Set)
+      run: |
+        terraform apply -auto-approve \
+          -var="scale_set_name=${{ github.event.inputs.scale_set_name }}" \
+          -var="custom_image_id=$CUSTOM_IMAGE_ID" \
+          -var="ssh_public_key=$(cat ~/.ssh/id_rsa.pub)" \
+          -var="initial_instances=${{ github.event.inputs.initial_instances }}" \
+          -var="max_instances=${{ github.event.inputs.max_instances }}"
+        echo "SCALE_SET_ID=$(terraform output -raw scale_set_id)" >> $GITHUB_ENV
+        echo "LOAD_BALANCER_IP=$(terraform output -raw load_balancer_public_ip)" >> $GITHUB_ENV
+        echo "RESOURCE_GROUP_NAME=$(terraform output -raw resource_group_name)" >> $GITHUB_ENV
+        echo "SCALE_SET_NAME=$(terraform output -raw scale_set_name)" >> $GITHUB_ENV
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Wait for Scale Set Deployment
+      run: |
+        echo "Waiting for Scale Set instances to be ready..."
+        for i in {1..20}; do
+          HEALTHY_INSTANCES=$(az vmss list-instances \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $SCALE_SET_NAME \
+            --query "[?provisioningState=='Succeeded'] | length(@)" -o tsv)
+          
+          if [ "$HEALTHY_INSTANCES" -ge "${{ github.event.inputs.initial_instances }}" ]; then
+            echo "All $HEALTHY_INSTANCES instances are healthy"
+            break
+          fi
+          echo "Attempt $i/20: $HEALTHY_INSTANCES instances ready, waiting for ${{ github.event.inputs.initial_instances }}..."
+          sleep 30
+        done
+
+    - name: Test Application Endpoints
+      run: |
+        echo "Testing application endpoints..."
+        
+        # Wait a bit more for load balancer to be ready
+        sleep 60
+        
+        # Test health endpoint
+        if curl -f -m 10 "http://$LOAD_BALANCER_IP/health"; then
+          echo "✅ Health check endpoint is working"
+        else
+          echo "❌ Health check endpoint failed"
+        fi
+        
+        # Test main page
+        if curl -f -m 10 "http://$LOAD_BALANCER_IP/"; then
+          echo "✅ Main page is accessible"
+        else
+          echo "❌ Main page is not accessible"
+        fi
+
+    - name: Upload Terraform State
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: terraform-state-scale-set
+        path: |
+          terraform/environments/scaleset/.terraform/
+          terraform/environments/scaleset/terraform.tfstate*
+        retention-days: 30
+
+    - name: Scale Set Deployment Summary
+      run: |
+        echo "## VM Scale Set Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ VM Scale Set deployed successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Deployment Details:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Scale Set Name**: $SCALE_SET_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Custom Image Version**: ${{ github.event.inputs.image_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Initial Instances**: ${{ github.event.inputs.initial_instances }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Maximum Instances**: ${{ github.event.inputs.max_instances }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Load Balancer IP**: $LOAD_BALANCER_IP" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Application URLs:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Main Application**: http://$LOAD_BALANCER_IP/" >> $GITHUB_STEP_SUMMARY
+        echo "- **Health Check**: http://$LOAD_BALANCER_IP/health" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "- Monitor the Scale Set performance in Azure Portal" >> $GITHUB_STEP_SUMMARY
+        echo "- Configure custom auto-scaling rules if needed" >> $GITHUB_STEP_SUMMARY
+        echo "- Set up monitoring and alerting" >> $GITHUB_STEP_SUMMARY

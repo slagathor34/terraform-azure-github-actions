@@ -1,0 +1,78 @@
+---
+- name: Generalize VM for image capture
+  hosts: all
+  become: true
+  
+  tasks:
+    - name: Stop services that should not run during generalization
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - walinuxagent
+        - rsyslog
+        - networkd-dispatcher
+      ignore_errors: true
+
+    - name: Clear log files
+      shell: |
+        find /var/log -type f -exec truncate -s 0 {} \;
+        rm -rf /var/log/*.gz
+        rm -rf /var/log/*.[0-9]
+        rm -rf /var/log/*/*.[0-9]
+        rm -rf /var/log/*/*.gz
+      ignore_errors: true
+
+    - name: Clear machine-specific files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/etc/machine-id"
+        - "/var/lib/dbus/machine-id"
+        - "/etc/ssh/ssh_host_*"
+        - "/root/.bash_history"
+        - "/home/*/.bash_history"
+      ignore_errors: true
+
+    - name: Clear network configuration
+      shell: |
+        rm -f /etc/netplan/*.yaml
+        rm -f /etc/systemd/network/*
+        rm -f /var/lib/dhcp/*
+      ignore_errors: true
+
+    - name: Remove cloud-init artifacts
+      shell: |
+        cloud-init clean --logs --seed
+        rm -rf /var/lib/cloud/
+        rm -rf /etc/cloud/cloud.cfg.d/50-curtin-networking.cfg
+      ignore_errors: true
+
+    - name: Clear package cache and temporary files
+      shell: |
+        apt-get clean
+        apt-get autoremove -y
+        rm -rf /tmp/*
+        rm -rf /var/tmp/*
+        rm -rf /root/.cache
+        rm -rf /home/*/.cache
+      ignore_errors: true
+
+    - name: Truncate hostname file
+      shell: echo "" > /etc/hostname
+      ignore_errors: true
+
+    - name: Clear user command history
+      shell: |
+        history -c
+        history -w
+        rm -f ~/.bash_history
+        rm -f /root/.bash_history
+        find /home -name ".bash_history" -delete
+      ignore_errors: true
+
+    - name: Final cleanup
+      shell: |
+        sync
+        echo "VM prepared for generalization"

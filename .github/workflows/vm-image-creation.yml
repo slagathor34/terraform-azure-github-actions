@@ -1,0 +1,244 @@
+name: 'VM Image Creation Pipeline'
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_name:
+        description: 'Name of the VM to create and configure'
+        required: true
+        default: 'template-vm'
+        type: string
+      image_version:
+        description: 'Version of the image to create'
+        required: true
+        default: '1.0.0'
+        type: string
+      cleanup_vm:
+        description: 'Delete the VM after image creation'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  create-vm-and-image:
+    name: 'Create VM and Custom Image'
+    runs-on: ubuntu-latest
+    environment: 
+      name: production
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./terraform/environments/image-creation
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.7.0"
+        terraform_wrapper: false
+
+    - name: Azure CLI Login
+      run: |
+        az login --service-principal \
+          --username ${{ secrets.AZURE_CLIENT_ID }} \
+          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
+          --tenant ${{ secrets.AZURE_TENANT_ID }}
+        az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup SSH Key for VM Access
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        echo "${{ secrets.VM_SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa
+        chmod 644 ~/.ssh/id_rsa.pub
+
+    - name: Setup Terraform Backend
+      id: backend
+      run: |
+        # Create resource group for Terraform state if it doesn't exist
+        az group create --name "tfstate-rg" --location "East US" --tags "ManagedBy=terraform" "Purpose=tfstate" || true
+        
+        # Create storage account for Terraform state if it doesn't exist
+        STORAGE_ACCOUNT_NAME="tfstate$(echo -n ${{ secrets.AZURE_SUBSCRIPTION_ID }} | sha256sum | cut -c1-16)"
+        echo "Storage account name: $STORAGE_ACCOUNT_NAME"
+        
+        # Try to get existing storage account first
+        EXISTING_ACCOUNT=$(az storage account list --resource-group "tfstate-rg" --query "[?tags.Purpose=='tfstate'].name | [0]" -o tsv)
+        if [ ! -z "$EXISTING_ACCOUNT" ]; then
+          STORAGE_ACCOUNT_NAME=$EXISTING_ACCOUNT
+          echo "Using existing storage account: $STORAGE_ACCOUNT_NAME"
+        else
+          az storage account create \
+            --name $STORAGE_ACCOUNT_NAME \
+            --resource-group "tfstate-rg" \
+            --location "East US" \
+            --sku "Standard_LRS" \
+            --tags "ManagedBy=terraform" "Purpose=tfstate"
+          echo "Created new storage account: $STORAGE_ACCOUNT_NAME"
+        fi
+        
+        # Create container for Terraform state if it doesn't exist
+        az storage container create \
+          --name "tfstate" \
+          --account-name $STORAGE_ACCOUNT_NAME || true
+        
+        # Export for later steps
+        echo "TERRAFORM_STORAGE_ACCOUNT=$STORAGE_ACCOUNT_NAME" >> $GITHUB_ENV
+        echo "storage_account=$STORAGE_ACCOUNT_NAME" >> $GITHUB_OUTPUT
+
+    - name: Switch to Image Creation Environment
+      run: |
+        cd environments/image-creation
+        echo "Working in image creation environment"
+
+    - name: Terraform Init (Image Creation)
+      run: |
+        terraform init \
+          -backend-config="resource_group_name=tfstate-rg" \
+          -backend-config="storage_account_name=$TERRAFORM_STORAGE_ACCOUNT" \
+          -backend-config="container_name=tfstate" \
+          -backend-config="key=image-creation.tfstate"
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Terraform Apply (Create VM and Infrastructure)
+      run: |
+        terraform apply -auto-approve \
+          -var="vm_name=${{ github.event.inputs.vm_name }}" \
+          -var="image_version=${{ github.event.inputs.image_version }}" \
+          -var="ssh_public_key=$(cat ~/.ssh/id_rsa.pub)"
+        echo "VM_PUBLIC_IP=$(terraform output -raw vm_public_ip)" >> $GITHUB_ENV
+        echo "RESOURCE_GROUP_NAME=$(terraform output -raw resource_group_name)" >> $GITHUB_ENV
+        echo "GALLERY_NAME=$(terraform output -raw gallery_name)" >> $GITHUB_ENV
+        echo "IMAGE_NAME=$(terraform output -raw image_name)" >> $GITHUB_ENV
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Wait for VM to be ready
+      run: |
+        echo "Waiting for VM to be accessible..."
+        for i in {1..30}; do
+          if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no azureuser@$VM_PUBLIC_IP "echo 'VM is ready'"; then
+            echo "VM is accessible"
+            break
+          fi
+          echo "Attempt $i/30: VM not ready yet, waiting 30 seconds..."
+          sleep 30
+        done
+
+    - name: Setup Ansible
+      run: |
+        pip install ansible
+
+    - name: Create Ansible Inventory
+      run: |
+        mkdir -p ../../ansible
+        cat > ../../ansible/inventory << EOF
+        [vms]
+        template-vm ansible_host=$VM_PUBLIC_IP ansible_user=azureuser ansible_ssh_private_key_file=~/.ssh/id_rsa
+        EOF
+
+    - name: Run Ansible Configuration Playbook
+      run: |
+        cd ../../ansible
+        ansible-playbook -i inventory playbooks/configure-vm.yml -v
+
+    - name: Run Ansible Generalization Playbook  
+      run: |
+        cd ../../ansible
+        ansible-playbook -i inventory playbooks/generalize-vm.yml -v
+
+    - name: Deallocate and Generalize VM
+      run: |
+        echo "Deallocating VM..."
+        az vm deallocate \
+          --resource-group $RESOURCE_GROUP_NAME \
+          --name ${{ github.event.inputs.vm_name }}
+        
+        echo "Generalizing VM..."
+        az vm generalize \
+          --resource-group $RESOURCE_GROUP_NAME \
+          --name ${{ github.event.inputs.vm_name }}
+
+    - name: Create VM Image in Compute Gallery
+      run: |
+        VM_ID=$(az vm show \
+          --resource-group $RESOURCE_GROUP_NAME \
+          --name ${{ github.event.inputs.vm_name }} \
+          --query id -o tsv)
+        
+        echo "Creating image version ${{ github.event.inputs.image_version }}..."
+        az sig image-version create \
+          --resource-group $RESOURCE_GROUP_NAME \
+          --gallery-name $GALLERY_NAME \
+          --gallery-image-definition $IMAGE_NAME \
+          --gallery-image-version ${{ github.event.inputs.image_version }} \
+          --managed-image $VM_ID \
+          --replica-count 1 \
+          --target-regions "East US"
+        
+        echo "IMAGE_VERSION_ID=$(az sig image-version show \
+          --resource-group $RESOURCE_GROUP_NAME \
+          --gallery-name $GALLERY_NAME \
+          --gallery-image-definition $IMAGE_NAME \
+          --gallery-image-version ${{ github.event.inputs.image_version }} \
+          --query id -o tsv)" >> $GITHUB_ENV
+
+    - name: Cleanup VM (if requested)
+      if: ${{ github.event.inputs.cleanup_vm == 'true' }}
+      run: |
+        echo "Cleaning up VM and associated resources..."
+        terraform destroy -auto-approve -target=module.virtual_machine
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        ARM_USE_CLI: false
+
+    - name: Upload Terraform State
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: terraform-state-image-creation
+        path: |
+          terraform/environments/image-creation/.terraform/
+          terraform/environments/image-creation/terraform.tfstate*
+        retention-days: 30
+
+    - name: Image Creation Summary
+      run: |
+        echo "## VM Image Creation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Custom VM image created successfully" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Image Details:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Gallery Name**: $GALLERY_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Name**: $IMAGE_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Version**: ${{ github.event.inputs.image_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **VM Cleanup**: ${{ github.event.inputs.cleanup_vm }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "- Use the created image in VM Scale Sets" >> $GITHUB_STEP_SUMMARY
+        echo "- Run the 'Deploy Scale Set' workflow to deploy using this image" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Image ID for Scale Set:" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "$IMAGE_VERSION_ID" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

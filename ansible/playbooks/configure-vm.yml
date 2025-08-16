@@ -1,0 +1,91 @@
+---
+- name: Configure VM and prepare for image capture
+  hosts: all
+  become: true
+  vars:
+    app_name: "myapp"
+    app_version: "1.0.0"
+    
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - nginx
+          - curl
+          - wget
+          - git
+          - unzip
+          - htop
+          - tree
+          - jq
+        state: present
+
+    - name: Configure nginx
+      template:
+        src: nginx.conf.j2
+        dest: /etc/nginx/sites-available/default
+        backup: yes
+      notify: restart nginx
+
+    - name: Create application directory
+      file:
+        path: /opt/{{ app_name }}
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Create a simple index page
+      template:
+        src: index.html.j2
+        dest: /var/www/html/index.html
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Enable and start nginx
+      systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+    - name: Configure firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "22"
+        - "80"
+        - "443"
+
+    - name: Enable firewall
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: Clean package cache
+      apt:
+        autoclean: yes
+        autoremove: yes
+
+    - name: Clear bash history
+      file:
+        path: "{{ item }}/.bash_history"
+        state: absent
+      loop:
+        - "/root"
+        - "/home/{{ ansible_user | default('azureuser') }}"
+
+  handlers:
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
