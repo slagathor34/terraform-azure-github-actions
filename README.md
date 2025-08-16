@@ -13,11 +13,8 @@ This setup includes:
 Before using this repository, ensure you have:
 
 1. An Azure subscription
-2. A GitHub repository with the following secrets configured:
-   - `AZURE_CLIENT_ID`: Azure Service Principal Application ID
-   - `AZURE_CLIENT_SECRET`: Azure Service Principal Secret
-   - `AZURE_SUBSCRIPTION_ID`: Your Azure Subscription ID
-   - `AZURE_TENANT_ID`: Your Azure Active Directory Tenant ID
+2. A GitHub repository with the following secret configured:
+   - `AZURE_CREDENTIALS`: JSON string with Azure Service Principal credentials
 
 ## Repository Structure
 
@@ -62,10 +59,7 @@ This will output JSON with the required credentials for GitHub secrets.
 
 In your GitHub repository, go to Settings > Secrets and variables > Actions, and add:
 
-- `AZURE_CLIENT_ID`: The `appId` from the service principal output
-- `AZURE_CLIENT_SECRET`: The `password` from the service principal output  
-- `AZURE_SUBSCRIPTION_ID`: Your Azure subscription ID
-- `AZURE_TENANT_ID`: The `tenant` from the service principal output
+- `AZURE_CREDENTIALS`: The complete JSON output from the service principal creation
 
 ### 4. Customize Variables
 

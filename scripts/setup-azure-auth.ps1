@@ -77,20 +77,18 @@ try {
     Write-Info "GitHub Secrets Configuration"
     Write-Host "========================================"
     Write-Host ""
-    Write-Host "Add the following secrets to your GitHub repository:"
+    Write-Host "Add the following secret to your GitHub repository:"
     Write-Host "Go to: Settings > Secrets and variables > Actions > New repository secret"
     Write-Host ""
-    Write-Host "Secret Name: AZURE_CLIENT_ID"
-    Write-Host "Secret Value: $clientId"
-    Write-Host ""
-    Write-Host "Secret Name: AZURE_CLIENT_SECRET" 
-    Write-Host "Secret Value: $clientSecret"
-    Write-Host ""
-    Write-Host "Secret Name: AZURE_SUBSCRIPTION_ID"
-    Write-Host "Secret Value: $subscriptionId"
-    Write-Host ""
-    Write-Host "Secret Name: AZURE_TENANT_ID"
-    Write-Host "Secret Value: $tenantId"
+    Write-Host "Secret Name: AZURE_CREDENTIALS"
+    Write-Host "Secret Value:"
+    $credentialsJson = @{
+        clientId = $clientId
+        clientSecret = $clientSecret
+        subscriptionId = $subscriptionId
+        tenantId = $tenantId
+    } | ConvertTo-Json -Compress
+    Write-Host $credentialsJson -ForegroundColor Green
     Write-Host ""
 
     Write-Warning "Important: Save these values securely. The client secret cannot be retrieved again."
@@ -101,8 +99,11 @@ try {
     if ($saveToFile -eq 'y' -or $saveToFile -eq 'Y') {
         $secretsContent = @"
 # Azure Service Principal Credentials for GitHub Actions
-# Add these as secrets in your GitHub repository
+# Add this as a secret in your GitHub repository
 
+AZURE_CREDENTIALS=$credentialsJson
+
+# Individual credential details (for reference)
 AZURE_CLIENT_ID=$clientId
 AZURE_CLIENT_SECRET=$clientSecret
 AZURE_SUBSCRIPTION_ID=$subscriptionId
