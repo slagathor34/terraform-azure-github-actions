@@ -1,5 +1,7 @@
 # Terraform Azure Infrastructure with GitHub Actions
 
+*** This project was generated using GitHub Copilot Agent and Claude Code Model ***
+
 This repository contains Terraform configurations for deploying infrastructure to Microsoft Azure, with automated deployment using GitHub Actions. It supports both basic infrastructure deployment and advanced VM-to-Scale-Set workflows for custom image creation and auto-scaling applications.
 
 ## 🏗️ Complete Workflow Architecture
